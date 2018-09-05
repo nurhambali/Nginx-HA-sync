@@ -1,0 +1,205 @@
+
+##################
+Nginx HA & reserve Ubuntu
+##################
+
+# Spesifikasi Server 
+
+## 1. Server Master :
+##### enp0s3 		: 192.168.137.178
+##### enp0s8 		: 10.1.1.1
+####  Hostname 		: Master
+## 2. Server Slave  : 192.168.137.43
+##### enp0s8 		: 10.1.1.2
+####  Hostame 		: Slave
+## 3. web apps 		: 10.1.1.254
+
+### Lakukan Disemua Server 
+
+sudo apt update -y  
+
+#### Lakukan di server Master
+
+hostnamectl set-hostname master
+
+sudo apt install nginx -y 
+sudo apt install keepalived -y 
+sudo  apt install rsync -y
+
+
+systemctl start nginx
+systemctl enable nginx
+systemctl status nginx
+
+## Create index.html
+echo "Master" > /var/www/html/index.nginx-debian.html
+
+# Edit file keepalived.conf
+
+cat > /etc/keepalived/keepalived.conf << EOF
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     sysadmin@mydomain.com
+     support@mydomain.com
+   }
+   notification_email_from lb1@mydomain.com
+   smtp_server localhost
+   smtp_connect_timeout 30
+}
+vrrp_script chk_nginx {
+    script "pidof nginx"
+    interval 2
+}
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface enp0s3
+    virtual_router_id 101
+    priority 101
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.137.3
+    }
+    track_script {
+        chk_nginx
+    }
+}
+EOF
+
+## start keepalived
+systemctl start keepalived
+systemctl enable keepalived
+systemctl status keepalived
+
+#### Lakukan di server Slave
+
+hostnamectl set-hostname slave
+
+sudo apt install nginx -y 
+sudo apt install keepalived -y 
+sudo  apt install rsync -y
+
+
+systemctl start nginx
+systemctl enable nginx
+systemctl status nginx
+
+## Create index.html
+echo "Slave" > /var/www/html/index.nginx-debian.html
+
+# Edit file keepalived.conf
+
+cat > /etc/keepalived/keepalived.conf << EOF
+! Configuration File for keepalived
+
+global_defs {
+   notification_email {
+     sysadmin@mydomain.com
+     support@mydomain.com
+   }
+   notification_email_from lb1@mydomain.com
+   smtp_server localhost
+   smtp_connect_timeout 30
+}
+vrrp_script chk_nginx {
+    script "pidof nginx"
+    interval 2
+}
+
+vrrp_instance VI_1 {
+    state BACKUP
+    interface enp0s3
+    virtual_router_id 101
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        192.168.137.3
+    }
+    track_script {
+        chk_nginx
+    }
+}
+
+EOF
+
+### start keepalived
+
+systemctl start keepalived
+systemctl enable keepalived
+systemctl status keepalived
+
+
+
+####### Lakukan Pada Server MASTER
+##### confgure reverse-proxy
+
+
+unlink /etc/nginx/sites-enabled/default
+
+cat > /etc/nginx/sites-enabled/reverse-proxy.conf << EOF
+server {
+    listen 80;
+    location / {
+    proxy_pass http://10.1.1.254;
+    }
+}
+
+EOF
+
+#### Configure sync 
+
+# rubah config ssh supaya root dapat mengakses ssh
+
+## rubah PermitRootLogin prohibit-password menjadi PermitRootLogin yes
+
+nano /etc/ssh/sshd_config
+
+##### generet ssh 
+
+ssh-keygen
+
+### copy private key ke server tujuan 
+
+ssh-copy-id root@192.168.137.43  
+
+rsync -avzh /etc/nginx/sites-enabled/ root@192.168.137.43:/etc/nginx/sites-enabled/
+
+
+
+####### Lakukan Pada Server Slave
+
+#### Configure sync 
+
+# rubah config ssh supaya root dapat mengakses ssh
+
+## rubah PermitRootLogin prohibit-password menjadi PermitRootLogin yes
+
+nano /etc/ssh/sshd_config
+
+##### generet ssh 
+
+ssh-keygen
+
+### copy private key ke server tujuan 
+
+ssh-copy-id root@192.168.137.178
+
+###### sync reverse-proxy
+rsync -avzhe ssh root@192.168.137.178:/etc/nginx/sites-enabled/ /etc/nginx/sites-enabled/
+
+### auto rsync 5 menit
+
+crontab -e 
+
+
+*/5        *        *        *        *   rsync -avzhe ssh root@192.168.137.178:/etc/nginx/sites-enabled/ /etc/nginx/sites-enabled/
